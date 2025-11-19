@@ -70,10 +70,6 @@ public class ParsingTaskProcessingService {
         }
     }
 
-    /**
-     * Обработка одной задачи парсинга в отдельном потоке.
-     * Здесь мы явно сохраняем задачу после изменения статуса.
-     */
     public void processTask(Long taskId) {
         ParsingTask task = parsingTaskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalStateException("ParsingTask not found: " + taskId));
@@ -95,7 +91,6 @@ public class ParsingTaskProcessingService {
                     taskId, task.getUrl(), e.getMessage());
         }
 
-        // КЛЮЧЕВАЯ СТРОКА: сохраняем обновлённый статус в БД
         parsingTaskRepository.save(task);
     }
 }

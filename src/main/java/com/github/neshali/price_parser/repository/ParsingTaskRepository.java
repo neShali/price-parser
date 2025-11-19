@@ -10,14 +10,12 @@ import java.util.Optional;
 
 /**
  * Репозиторий для задач парсинга.
- * Здесь сразу добавляем методы, которые пригодятся для многопоточного парсера.
  */
 @Repository
 public interface ParsingTaskRepository extends JpaRepository<ParsingTask, Long> {
 
     /**
      * Найти самую старую задачу в указанном статусе.
-     * Полезно, когда нам нужно брать задачи по очереди.
      */
     Optional<ParsingTask> findFirstByStatusOrderByCreatedAtAsc(ParsingTaskStatus status);
 

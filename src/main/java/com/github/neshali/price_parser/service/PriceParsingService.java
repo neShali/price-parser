@@ -29,7 +29,6 @@ public class PriceParsingService {
 
     /**
      * "Парсит" товар по URL и возвращает заполненный объект Product.
-     * Объект НЕ сохраняется в БД — этим занимается ParsingTaskProcessingService.
      */
     public Product parseProduct(String url) {
         Product product = new Product();
@@ -60,9 +59,7 @@ public class PriceParsingService {
     }
 
     /**
-     * Примитивное извлечение "имени товара" из URL.
-     * Например:
-     *   https://example.com/product/super-phone-3000 -> "Super phone 3000"
+     * Извлечение "имени товара" из URL.
      */
     private String extractNameFromUrl(String url) {
         try {

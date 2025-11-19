@@ -4,7 +4,6 @@ import java.math.BigDecimal;
 
 /**
  * Критерии фильтрации/сортировки товаров.
- * Используется только внутри приложения, не как JSON.
  */
 public class ProductFilterCriteria {
 

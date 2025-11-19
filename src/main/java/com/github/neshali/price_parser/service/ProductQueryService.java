@@ -26,14 +26,12 @@ public class ProductQueryService {
 
     /**
      * Возвращает отфильтрованный и отсортированный список товаров.
-     * ВАЖНО: здесь используется parallelStream(), чтобы показать параллельную обработку.
      */
     public List<ProductResponse> getFilteredProducts(ProductFilterCriteria criteria) {
         List<Product> allProducts = productRepository.findAll();
 
-        Stream<Product> stream = allProducts.parallelStream(); // параллельная обработка
+        Stream<Product> stream = allProducts.parallelStream();
 
-        // Фильтрация по подстроке в названии
         if (criteria.getQuery() != null && !criteria.getQuery().isBlank()) {
             String q = criteria.getQuery().toLowerCase(Locale.ROOT);
             stream = stream.filter(p ->
@@ -41,7 +39,6 @@ public class ProductQueryService {
             );
         }
 
-        // Фильтрация по цене
         BigDecimal minPrice = criteria.getMinPrice();
         BigDecimal maxPrice = criteria.getMaxPrice();
 
@@ -56,7 +53,6 @@ public class ProductQueryService {
             );
         }
 
-        // Сортировка
         ProductSortBy sortBy = criteria.getSortBy() != null
                 ? criteria.getSortBy()
                 : ProductSortBy.PRICE;

@@ -24,25 +24,25 @@ public class Product {
     private Long id;
 
     /**
-     * Название товара (как на странице магазина).
+     * Название товара.
      */
     @Column(nullable = false)
     private String name;
 
     /**
-     * Описание товара (может быть длинным, делаем побольше длину).
+     * Описание товара.
      */
     @Column(length = 4000)
     private String description;
 
     /**
-     * Цена товара. BigDecimal используем, чтобы не терять точность.
+     * Цена товара.
      */
     @Column(precision = 19, scale = 2)
     private BigDecimal price;
 
     /**
-     * Дата/время публикации товара (или последнего обновления цены).
+     * Дата/время публикации товара.
      */
     @Column(name = "publication_date")
     private LocalDateTime publicationDate;
