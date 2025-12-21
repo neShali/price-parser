@@ -1,268 +1,155 @@
-# price-parser
+# Отчёт по метрикам, профилированию и бенчмаркингу
 
-Учебный многопоточный парсер цен на товары на Spring Boot.
+## Цель работы
 
-Проект демонстрирует:
+Собрать метрики производительности, провести профилирование (CPU/Heap/GC), выполнить бенчмарки JMH разных стратегий парсинга, настроить распределённый трейсинг и сформировать выводы о производительности.
 
-- работу с **Spring Boot 3**, **JPA/Hibernate** и **H2** (in-memory БД);
-- многопоточную обработку задач через **ExecutorService** и `@Scheduled`;
-- использование **WebClient (WebFlux)** для получения дополнительных данных о товаре;
-- параллельную фильтрацию результатов (`parallelStream()`);
-- базовые **unit-тесты** контроллера и сервисов.
+## Стек и окружение
 
----
+-   Spring Boot 3.5.7, Java 21 (Temurin 21.0.6)
+-   Micrometer + Prometheus, Grafana
+-   VisualVM (heap/CPU sampler, thread dump, heap dump)
+-   OpenTelemetry + Jaeger
+-   JMH для микробенчмарков
+-   H2 in-memory БД
 
-## 1. Как запустить
+Запуск приложения:
 
-В корне проекта:
+```bash
+mvn spring-boot:run
+# базовый URL: http://localhost:8080
+```
 
-    mvn spring-boot:run
+## Структура проекта (ключевое)
 
-Приложение стартует на: `http://localhost:8080`.
+-   Парсер: `PriceParsingService`, задачи: `ParsingTaskProcessingService` + `ParsingScheduler`
+-   REST: `PriceParserController`
+-   Метрики: Micrometer + Actuator, экспорт в Prometheus (`prometheus.yml`)
+-   Трейсинг: OpenTelemetry OTLP -> Jaeger
+-   Бенчмарки: `PriceParsingBenchmark` (for / stream / parallelStream)
 
+## Шаг 1. Метрики Micrometer/Prometheus
 
-## 2. База данных и H2 Console
+Что собрано:
 
-Используется **in-memory H2** (настройки смотрите в `application.properties`):
+-   Время парсинга: гистограмма/таймер `price_parser_parsing_duration_seconds_*`
+-   Кол-во успешных/ошибочных парсингов: `price_parser_parsing_success_count_total`, `price_parser_parsing_failure_count_total`
+-   Кол-во сохранённых в БД: `price_parser_products_saved_count_total`
+-   HTTP метрики: `http.server.requests` (Actuator)
+-   Системные метрики: executor.\*, JVM (heap, GC, threads), HikariCP
 
-- URL: `jdbc:h2:mem:priceparserdb`
-- user: `sa`
-- password: пустой
-- консоль H2 включена по адресу: `http://localhost:8080/h2-console`
+Подтверждения: скриншоты `Actuator metrics.png`, `HTTP метрики 1.png`, графики из Grafana (`price_parser_*` PNG).
 
-При подключении в консоли:
+Иллюстрации:
 
-- JDBC URL: `jdbc:h2:mem:priceparserdb`
-- User Name: `sa`
-- Password: (пусто)
+-   `Actuator metrics.png`
+-   `actuator_health.png`
+-   `HTTP метрики 1.png`
 
-Основные таблицы:
+![Actuator metrics](Actuator%20metrics.png)
 
-- `PARSING_TASKS` — задачи на парсинг
-- `PRODUCTS` — распарсенные товары
+![Actuator health](actuator_health.png)
 
-При старте приложения в таблицу `PARSING_TASKS` добавляются 5 демо-задач (`DataInitializer`).
+![HTTP метрики 1](HTTP%20метрики%201.png)
 
----
+## Шаг 2. Профилирование (VisualVM / JFR)
 
-## 3. Архитектура
+-   Thread dump и Heap dump сняты (скриншоты `Thread Dump.png`, `Monitor.png`, `Memory Sampler.png`).
+-   CPU Sampler: основная активность в потоках `http-nio-8080-*`, вспомогательные — OpenTelemetry (`BatchSpanProcessor`).
+-   Heap Sampler: основные потребители — `byte[]`, `String`, `ConcurrentHashMap`/`HashMap` структуры (Micrometer/OTel), отражено на скрине `Memory Sampler.png`.
+-   Нагрузочный паттерн: стабильное потребление CPU ~0–1%, рост heap при запросах, затем стабилизация после GC (см. `Monitor.png`).
 
-### 3.1. Доменные сущности
+Иллюстрации:
 
-**Product**
+-   `CPU Sampler.png`
+-   `Memory Sampler.png`
+-   `Monitor.png`
+-   `Thread Dump.png`
 
-- `id` — PK
-- `name` — название товара
-- `description` — описание
-- `price` — цена (`BigDecimal`)
-- `publicationDate` — дата публикации
-- `sourceUrl` — URL страницы товара
+![CPU Sampler](CPU%20Sampler.png)
 
-**ParsingTask**
+![Memory Sampler](Memory%20Sampler.png)
 
-- `id` — PK
-- `targetUrl` — URL, который надо распарсить
-- `status` — `NEW`, `IN_PROGRESS`, `COMPLETED`, `FAILED`
-- `errorMessage` — сообщение об ошибке при парсинге (если есть)
-- `createdAt`, `updatedAt` — технические поля
+![Monitor](Monitor.png)
 
----
+![Thread Dump](Thread%20Dump.png)
 
-### 3.2. Слои и сервисы
+## Шаг 3. Управление памятью и GC
 
-- `PriceParsingService`  
-  Заглушка парсера: по URL генерирует тестовый `Product`.  
-  Имитация реального HTTP-запроса и разбора HTML. При желании здесь можно подключить Jsoup.
+-   Частота GC низкая, на снятых сэмплах нет частых пауз (GC activity ≈ 0%).
+-   Крупные аллокации: буферы (`byte[]`), коллекции метрик/трейсов. Утечек не выявлено.
+-   Heap dump проанализирован в VisualVM (top objects на скрине).
 
-- `ParsingTaskProcessingService`  
-  Многопоточная обработка задач парсинга:
-    - загружает задачи со статусом `NEW`;
-    - ставит им статус `IN_PROGRESS`;
-    - в пуле потоков вызывает `PriceParsingService.parseProduct(...)`;
-    - сохраняет `Product` и переводит задачу в `COMPLETED` или `FAILED`.
+## Шаг 4. Деградации производительности (обнаружение)
 
-- `ParsingExecutorConfig`  
-  Конфигурация `ExecutorService` (пул потоков для парсинга).
+-   N+1 для репозиториев не зафиксировано в текущей демо-нагрузке (H2, малый объём). Для реальной БД рекомендовано: `@EntityGraph`/`fetch join` и индексы.
+-   Индексы: для PROD требуется добавить индексы на `ParsingTask(status)` и ключевые поля в `Product` (имя, цена, дата) — сейчас в демо не критично, но рекомендуется.
+-   Аллокации: основная доля — инфраструктурные коллекции (метрики/OTel). Для снижения: отключать ненужные метрики/трейсы и уменьшать уровень детализации.
+-   Синхронизация потоков: пул парсинга фиксирован (`ParsingExecutorConfig`), узких мест синхронизации в профиле не выявлено.
 
-- `ParsingScheduler`  
-  Класс с `@Scheduled`, который периодически:
-    - ищет новые задачи;
-    - раздаёт их в пул потоков через `ParsingTaskProcessingService`.
+## Шаг 5. OpenTelemetry и трейсинг
 
-- `ProductQueryService`  
-  Получение списка товаров с использованием `parallelStream()`:
-    - фильтрация по имени и диапазону цен;
-    - сортировка (по цене, имени, дате публикации);
-    - пагинация.
+-   Настроен OTLP экспорт, Jaeger собирает спаны. Скриншоты `Jaeger UI 1/2.png` демонстрируют трейс `http post /parse` (метаданные: статус 200, duration ~3–9 ms).
+-   Теги спанов включают HTTP-метаданные, outcome, method, url.
 
-- `PriceParserController`  
-  REST-контроллер с эндпоинтами:
-    - `POST /parse` — добавить задачу парсинга;
-    - `GET /products` — получить страницу товаров из БД;
-    - `GET /products/filtered` — получить отфильтрованные товары с параллельной обработкой.
+Иллюстрации:
 
-- `WebClientConfig` и `ExternalProductInfoClient`  
-  Пример взаимодействия с внешним сервисом через `WebClient` (обогащение данных о товаре).
+-   `Jaeger UI 1.png`
+-   `Jaeger UI 2.png`
 
----
+![Jaeger UI 1](Jaeger%20UI%201.png)
 
-## 4. REST API
-
-### 4.1. Добавить URL для парсинга
-
-**POST** `/parse`
-
-Тело запроса:
-
-    {
-      "url": "https://example.com/product/999"
-    }
-
-Пример через `curl` (Git Bash / WSL):
-
-    curl -X POST "http://localhost:8080/parse" \
-      -H "Content-Type: application/json" \
-      -d "{\"url\": \"https://example.com/product/999\"}"
-
-Ответ (пример):
-
-    {
-      "id": 6,
-      "url": "https://example.com/product/999",
-      "status": "NEW",
-      "errorMessage": null,
-      "createdAt": "2025-11-19T00:01:53.2536871",
-      "updatedAt": "2025-11-19T00:01:53.2536871"
-    }
-
-После этого задача попадёт в таблицу `PARSING_TASKS`.  
-`ParsingScheduler` найдёт её и отправит в пул потоков на обработку.
-
----
-
-### 4.2. Получить товары (простая пагинация)
-
-**GET** `/products`
-
-Параметры пагинации:
-
-- `page` — номер страницы (0-based, по умолчанию `0`)
-- `size` — размер страницы (по умолчанию `20`)
-- `sort` — сортировка, например:
-    - `price,desc`
-    - `name,asc`
-    - `publicationDate,desc`
-
-Примеры:
-
-    # Первая страница по умолчанию
-    curl "http://localhost:8080/products"
-
-    # Вторая страница по 5 элементов, сортировка по цене по убыванию
-    curl "http://localhost:8080/products?page=1&size=5&sort=price,desc"
-
-Ответ — стандартный JSON Spring Data:
-
-- `content` — список товаров
-- `totalElements`, `totalPages`
-- `pageable`, `size`, `number` и т.д.
-
----
-
-### 4.3. Параллельная фильтрация и сортировка
-
-**GET** `/products/filtered`
-
-Этот эндпоинт использует `parallelStream()` внутри `ProductQueryService`
-(фильтрация и сортировка выполняются в параллельном потоке).
-
-Параметры:
-
-- `q` — подстрока для поиска по названию товара (case-insensitive)
-- `minPrice` — минимальная цена (`BigDecimal`, например `10` или `99.90`)
-- `maxPrice` — максимальная цена
-- `sortBy` — поле сортировки:
-    - `PRICE`
-    - `NAME`
-    - `PUBLICATION_DATE`
-- `direction` — направление сортировки:
-    - `ASC`
-    - `DESC`
-- `page` — номер страницы (0-based, default `0`)
-- `size` — размер страницы (default `20`)
-
-Примеры:
-
-    # Все товары, сортировка по цене по убыванию
-    curl "http://localhost:8080/products/filtered?sortBy=PRICE&direction=DESC"
-
-    # Товары, в названии которых есть '101', с ценой от 50 до 100
-    curl "http://localhost:8080/products/filtered?q=101&minPrice=50&maxPrice=100"
-
-    # Вторая страница по 3 товара, сортировка по дате публикации по возрастанию
-    curl "http://localhost:8080/products/filtered?sortBy=PUBLICATION_DATE&direction=ASC&page=1&size=3"
-
-Ответ — массив DTO:
-
-    [
-      {
-        "id": 1,
-        "name": "101",
-        "description": "Demo product parsed from https://example.com/product/101 (external category=electronics, ...)",
-        "price": 85.00,
-        "publicationDate": "2025-11-19T01:01:55.115",
-        "sourceUrl": "https://example.com/product/101"
-      }
-    ]
-
----
-
-## 5. Многопоточность и WebClient
-
-- Пул потоков создаётся в `ParsingExecutorConfig` (обычно фиксированный размер пула).
-- Планировщик `ParsingScheduler` помечен `@Scheduled` и через заданный интервал:
-    - ищет задачи со статусом `NEW`;
-    - отправляет их в `ParsingTaskProcessingService`.
-- `ParsingTaskProcessingService` выполняет `executorService.submit(...)` для каждой задачи:
-    - несколько URL обрабатываются параллельно (несколько потоков).
-- В `PriceParsingService` при парсинге URL дополнительно вызывается `ExternalProductInfoClient`
-  с помощью `WebClient` — имитация внешнего HTTP-сервиса:
-    - полученные данные добавляются к описанию товара.
-- В `ProductQueryService` используется `parallelStream()` для параллельной фильтрации и сортировки
-  уже сохранённых товаров.
-
----
-
-## 7. Тесты
-
-Запуск всех тестов:
-
-    mvn test
-
-Тесты покрывают:
-
-- генерацию и обогащение `Product` (`PriceParsingServiceTest`);
-- логику обработки задач и смены статусов (`ParsingTaskProcessingServiceTest`);
-- REST-контроллер (`PriceParserControllerTest`).
-
----
-
-## 8. Как подключить реальный парсер (опционально)
-
-Сейчас `PriceParsingService` — демонстрационная заглушка (рандомная цена, описание и т.д.).
-
-Чтобы подключить реальный парсер для одного конкретного магазина:
-
-1. Добавить зависимость на **Jsoup** в `pom.xml`:
-
-        <dependency>
-            <groupId>org.jsoup</groupId>
-            <artifactId>jsoup</artifactId>
-            <version>1.18.1</version>
-        </dependency>
-
-2. Внутри `PriceParsingService.parseProduct(String url)`:
-
-    - выполнить `Jsoup.connect(url).get();`
-    - достать нужные элементы страницы (название, цену, описание);
-    - заполнить поля `Product`.
+![Jaeger UI 2](Jaeger%20UI%202.png)
+
+## JMH (микробенчмарки)
+
+-   Класс: `PriceParsingBenchmark` (for / stream / parallelStream).
+-   Конфигурация: `forks(0)` в main для обхода проблемы с `ForkedMain` в среде запуска; аннотации JMH на классе.
+-   Рекомендованный запуск локально (где доступен jmh-core в classpath):
+    ```bash
+    mvn -DskipTests=false -Dtest=com.github.neshali.price_parser.benchmark.PriceParsingBenchmark test
+    ```
+    или через `exec:java` с корректным classpath. В окружении с Maven плагином jmh рекомендуется вынести в отдельный модуль/теневой jar.
+-   Цель: сравнить три стратегии парсинга 10 URL (for, stream, parallelStream); фактический прогон в данном окружении ограничен classpath для форков.
+
+## Actuator и основные эндпоинты
+
+-   `GET /actuator/health` — статус UP (скрин `actuator_health.png`)
+-   `GET /actuator/metrics` — список метрик (см. `Actuator metrics.png`)
+-   `GET /actuator/metrics/http.server.requests` — подробности по HTTP (скрин)
+-   Экспорт в Prometheus по адресу `/actuator/prometheus`
+
+## Grafana (Prometheus)
+
+-   Дашборды по кастомным метрикам:
+    -   `price_parser_parsing_duration_seconds_count` — счётчик выборок времени
+    -   `price_parser_parsing_success_count_total` — успехи
+    -   `price_parser_parsing_failure_count_total` — ошибки
+    -   `price_parser_products_saved_count_total` — сохранённые товары
+-   Скриншоты прилагаются (PNG в репозитории).
+
+## Результаты и выводы
+
+-   Собраны системные и прикладные метрики, доступные через Actuator/Prometheus.
+-   Трейсинг работает, Jaeger показывает спаны для `/parse`.
+-   Профилирование VisualVM выявило основные типы аллокаций (буферы, строки, коллекции метрик/OTel); проблемных горячих методов не обнаружено на тестовой нагрузке.
+-   GC стабильный, без частых пауз; утечек не найдено.
+-   Для production рекомендуется:
+    -   добавить индексы на поля фильтрации/поиска;
+    -   при необходимости ограничить набор собираемых метрик/спанов для снижения аллокаций;
+    -   вынести JMH в отдельный модуль или использовать официальной плагин `jmh-maven-plugin` с сборкой fat-jar для корректных форков.
+
+## Как воспроизвести (кратко)
+
+1. Запуск приложения: `mvn spring-boot:run`
+2. Метрики: открыть `http://localhost:8080/actuator/metrics`, `.../prometheus`
+3. Трейсы: Jaeger UI (см. docker-compose, сервис `jaeger`), искать сервис `price-parser`
+4. Профилирование: подключить VisualVM к PID приложения, снять heap dump / thread dump, Sampler CPU/Memory
+5. Бенчмарки: выполнить JMH (см. раздел выше)
+
+## Приложения (скриншоты в репозитории)
+
+-   Actuator: `Actuator metrics.png`, `actuator_health.png`, `HTTP метрики 1.png`
+-   VisualVM: `CPU Sampler.png`, `Memory Sampler.png`, `Monitor.png`, `Thread Dump.png`
+-   Grafana: `price_parser_parsing_*`, `price_parser_products_saved_count_total.png`
+-   Jaeger: `Jaeger UI 1.png`, `Jaeger UI 2.png`

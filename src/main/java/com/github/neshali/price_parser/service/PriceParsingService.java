@@ -3,6 +3,8 @@ package com.github.neshali.price_parser.service;
 import com.github.neshali.price_parser.domain.Product;
 import com.github.neshali.price_parser.integration.ExternalProductInfoClient;
 import com.github.neshali.price_parser.integration.dto.ExternalProductInfoResponse;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -14,48 +16,77 @@ import java.net.URISyntaxException;
 import java.time.LocalDateTime;
 import java.util.Random;
 
-
 @Service
 public class PriceParsingService {
 
     private static final Logger log = LoggerFactory.getLogger(PriceParsingService.class);
 
     private final ExternalProductInfoClient externalProductInfoClient;
+    private final Tracer tracer;
     private final Random random = new Random();
 
-    public PriceParsingService(ExternalProductInfoClient externalProductInfoClient) {
+    public PriceParsingService(ExternalProductInfoClient externalProductInfoClient, Tracer tracer) {
         this.externalProductInfoClient = externalProductInfoClient;
+        this.tracer = tracer;
     }
 
     /**
      * "Парсит" товар по URL и возвращает заполненный объект Product.
+     * Использует OpenTelemetry трейсинг для отслеживания этапов парсинга.
      */
     public Product parseProduct(String url) {
-        Product product = new Product();
+        Span span = tracer.nextSpan().name("parse.product").start();
+        try (Tracer.SpanInScope scope = tracer.withSpan(span)) {
+            span.tag("product.url", url);
+            log.debug("Начало парсинга продукта: {}", url);
 
-        product.setSourceUrl(url);
-        product.setName(extractNameFromUrl(url));
-        product.setDescription("Demo product parsed from " + url);
+            Product product = new Product();
 
-        BigDecimal price = BigDecimal
-                .valueOf(10 + random.nextInt(90)) // цена от 10 до 99
-                .setScale(2, RoundingMode.HALF_UP);
-        product.setPrice(price);
+            // Этап 1: Извлечение базовой информации
+            Span extractSpan = tracer.nextSpan().name("extract.basic.info").start();
+            try (Tracer.SpanInScope extractScope = tracer.withSpan(extractSpan)) {
+                product.setSourceUrl(url);
+                product.setName(extractNameFromUrl(url));
+                product.setDescription("Demo product parsed from " + url);
 
-        product.setPublicationDate(LocalDateTime.now());
+                BigDecimal price = BigDecimal
+                        .valueOf(10 + random.nextInt(90)) // цена от 10 до 99
+                        .setScale(2, RoundingMode.HALF_UP);
+                product.setPrice(price);
+                product.setPublicationDate(LocalDateTime.now());
 
-        // Попробуем обогатить данные через внешний сервис
-        ExternalProductInfoResponse externalInfo = externalProductInfoClient.fetchAdditionalInfo(url);
-        if (externalInfo != null) {
-            String extra = String.format(" [external category=%s, rating=%s, currency=%s]",
-                    externalInfo.getCategory(),
-                    externalInfo.getRating(),
-                    externalInfo.getCurrency());
-            product.setDescription(product.getDescription() + extra);
-            log.debug("Enriched product {} with external info: {}", url, extra);
+                extractSpan.tag("product.price", price.toString());
+                extractSpan.tag("product.name", product.getName());
+            } finally {
+                extractSpan.end();
+            }
+
+            // Этап 2: Обогащение данных через внешний сервис
+            Span enrichSpan = tracer.nextSpan().name("enrich.external.info").start();
+            try (Tracer.SpanInScope enrichScope = tracer.withSpan(enrichSpan)) {
+                ExternalProductInfoResponse externalInfo = externalProductInfoClient.fetchAdditionalInfo(url);
+                if (externalInfo != null) {
+                    String extra = String.format(" [external category=%s, rating=%s, currency=%s]",
+                            externalInfo.getCategory(),
+                            externalInfo.getRating(),
+                            externalInfo.getCurrency());
+                    product.setDescription(product.getDescription() + extra);
+                    log.debug("Обогащен продукт {} внешней информацией: {}", url, extra);
+                    enrichSpan.tag("external.enriched", "true");
+                    enrichSpan.tag("external.category",
+                            externalInfo.getCategory() != null ? externalInfo.getCategory() : "unknown");
+                } else {
+                    enrichSpan.tag("external.enriched", "false");
+                }
+            } finally {
+                enrichSpan.end();
+            }
+
+            log.debug("Парсинг продукта завершен: {}", url);
+            return product;
+        } finally {
+            span.end();
         }
-
-        return product;
     }
 
     /**

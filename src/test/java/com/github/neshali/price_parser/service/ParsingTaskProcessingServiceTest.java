@@ -5,11 +5,12 @@ import com.github.neshali.price_parser.domain.ParsingTaskStatus;
 import com.github.neshali.price_parser.domain.Product;
 import com.github.neshali.price_parser.repository.ParsingTaskRepository;
 import com.github.neshali.price_parser.repository.ProductRepository;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -42,11 +43,14 @@ class ParsingTaskProcessingServiceTest {
     @Mock
     private PriceParsingService priceParsingService;
 
+    private final MeterRegistry meterRegistry = new SimpleMeterRegistry();
+
     private final ExecutorService directExecutorService = new DirectExecutorService();
 
     @AfterEach
     void tearDown() {
         directExecutorService.shutdownNow();
+        meterRegistry.close();
     }
 
     private ParsingTaskProcessingService createService(int maxTasksPerTick) {
@@ -55,8 +59,8 @@ class ParsingTaskProcessingServiceTest {
                 productRepository,
                 priceParsingService,
                 directExecutorService,
-                maxTasksPerTick
-        );
+                maxTasksPerTick,
+                meterRegistry);
     }
 
     @Test
