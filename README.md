@@ -17,6 +17,7 @@
 
 ```bash
 mvn spring-boot:run
+docker compose up
 # базовый URL: http://localhost:8080
 ```
 
@@ -142,10 +143,11 @@ mvn spring-boot:run
 ## Как воспроизвести (кратко)
 
 1. Запуск приложения: `mvn spring-boot:run`
-2. Метрики: открыть `http://localhost:8080/actuator/metrics`, `.../prometheus`
-3. Трейсы: Jaeger UI (см. docker-compose, сервис `jaeger`), искать сервис `price-parser`
-4. Профилирование: подключить VisualVM к PID приложения, снять heap dump / thread dump, Sampler CPU/Memory
-5. Бенчмарки: выполнить JMH (см. раздел выше)
+2. Запуск контейнеров: `docker compose up`
+3. Метрики: открыть `http://localhost:8080/actuator/metrics`, `.../prometheus`
+4. Трейсы: Jaeger UI (см. docker-compose, сервис `jaeger`), искать сервис `price-parser`
+5. Профилирование: подключить VisualVM к PID приложения, снять heap dump / thread dump, Sampler CPU/Memory
+6. Бенчмарки: выполнить JMH (см. раздел выше)
 
 ## Приложения (скриншоты в репозитории)
 
